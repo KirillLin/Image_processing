@@ -4,33 +4,30 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 
-# ======================== НАСТРОЙКИ ========================
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 INPUT_DIR = os.path.join(SCRIPT_DIR, "input")
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "output")
 
 SUPPORTED_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
-MAX_SIDE = 500            # ресайз для скорости авторских циклов
-SHOW_PLOTS = True         # окна matplotlib
+MAX_SIDE = 500
+SHOW_PLOTS = True
 
-# --- Параметры удаления фона ---
-# Пороги HSV для синего (в OpenCV-шкале H: 0-179)
-# Два диапазона: тёмно-синий и ярко-синий (карточки на разном освещении)
 BLUE_RANGES = [
-    (np.array([100, 140,  75]), np.array([130, 255, 255])),  # было S=80
-    (np.array([ 95,  125, 120]), np.array([135, 255, 255])),  # было S=60
+    (np.array([100, 140,  75]), np.array([130, 255, 255])),
+    (np.array([ 95,  125, 120]), np.array([135, 255, 255])),
 ]
-# Зелёный (цифры и метки)
+
 GREEN_RANGES = [
     (np.array([ 40,  70,  60]), np.array([ 85, 255, 255])),
 ]
 
-# Фильтр по площади и форме
-MIN_AREA = 400            # минимум пикселей в компоненте
-MAX_ASPECT = 2.5          # макс. отношение сторон bounding box (отсекает пульт)
-MIN_FILL = 0.35           # мин. доля заполнения bounding box (компактность)
 
-# --- Ядра для низко/высокочастотных фильтров (методичка, стр. 18) ---
+MIN_AREA = 400
+MAX_ASPECT = 2.5
+MIN_FILL = 0.35
+
+
 LPF_KERNEL = np.array([[1, 1, 1],
                        [1, 1, 1],
                        [1, 1, 1]], dtype=np.float32) / 9.0
@@ -42,12 +39,8 @@ HPF_KERNEL = np.array([[-1, -1, -1],
 os.makedirs(INPUT_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-
-# ==========================================================
-# АВТОРСКИЙ МЕТОД №1: ОПЕРАТОР СОБЕЛЯ
-# ==========================================================
+#свой соболь
 def sobel_manual(image_gray: np.ndarray) -> np.ndarray:
-    """Оператор Собеля — выделение границ (ручная свёртка с Kx, Ky)."""
     Kx = np.array([[ 1, 0, -1],
                    [ 2, 0, -2],
                    [ 1, 0, -1]], dtype=np.float32)
@@ -76,11 +69,8 @@ def sobel_manual(image_gray: np.ndarray) -> np.ndarray:
     return mag.astype(np.uint8)
 
 
-# ==========================================================
-# АВТОРСКИЙ МЕТОД №2: МЕДИАННЫЙ ФИЛЬТР
-# ==========================================================
+#своя медиана
 def median_filter_manual(image_gray: np.ndarray, ksize: int = 3) -> np.ndarray:
-    """Медианный фильтр (ручная реализация через сортировку окна)."""
     pad = ksize // 2
     padded = np.pad(image_gray, pad, mode='edge')
     h, w = image_gray.shape
@@ -91,39 +81,29 @@ def median_filter_manual(image_gray: np.ndarray, ksize: int = 3) -> np.ndarray:
             out[i, j] = np.median(window)
     return out
 
-
-# ==========================================================
-# БИБЛИОТЕЧНЫЕ МЕТОДЫ ЧЕРЕЗ OPENCV
-# ==========================================================
+#не свой соболь
 def sobel_cv2(image_gray: np.ndarray) -> np.ndarray:
-    """Оператор Собеля через OpenCV."""
     gx = cv2.Sobel(image_gray, cv2.CV_32F, 1, 0, ksize=3)
     gy = cv2.Sobel(image_gray, cv2.CV_32F, 0, 1, ksize=3)
     mag = cv2.magnitude(gx, gy)
     mag = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)
     return mag.astype(np.uint8)
 
-
+#не своя медиана
 def median_filter_cv2(image_gray: np.ndarray, ksize: int = 3) -> np.ndarray:
-    """Медианный фильтр через OpenCV."""
     return cv2.medianBlur(image_gray, ksize)
 
-
+#не своё сглаживание
 def lowpass_cv2(image_gray: np.ndarray, kernel: np.ndarray) -> np.ndarray:
-    """Низкочастотный фильтр (сглаживание) через cv2.filter2D."""
     return cv2.filter2D(image_gray, ddepth=-1, kernel=kernel)
 
-
+#не своя резкость
 def highpass_cv2(image_gray: np.ndarray, kernel: np.ndarray) -> np.ndarray:
-    """Высокочастотный фильтр (подчёркивание границ) через cv2.filter2D."""
     return cv2.filter2D(image_gray, ddepth=-1, kernel=kernel)
 
 
-# ==========================================================
-# УДАЛЕНИЕ ФОНА (улучшенное)
-# ==========================================================
+
 def build_color_mask(image_bgr: np.ndarray) -> np.ndarray:
-    """HSV-маска по нескольким диапазонам синего и зелёного."""
     hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
     mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
 
@@ -139,13 +119,7 @@ def filter_components_by_shape(mask: np.ndarray,
                                min_area: int = 400,
                                max_aspect: float = 2.5,
                                min_fill: float = 0.35) -> np.ndarray:
-    """
-    Оставляет только компоненты:
-      - площадью >= min_area;
-      - не слишком вытянутые (aspect <= max_aspect);
-      - достаточно заполненные (area / (w*h) >= min_fill).
-    Отсекает пульт (вытянутый) и мелкий мусор.
-    """
+
     num, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
     out = np.zeros_like(mask)
 
@@ -165,47 +139,23 @@ def filter_components_by_shape(mask: np.ndarray,
 
 
 def remove_background(image_bgr: np.ndarray):
-    """
-    Улучшенный пайплайн удаления фона:
-      1. HSV-маска по нескольким диапазонам.
-      2. Морфология open  (убрать мелкий шум).
-      3. Морфология close (залить дырки внутри объектов — цифры).
-      4. Фильтр по площади и форме (убрать пульт, мусор).
-      5. bitwise_and с оригиналом.
-    Возвращает (result_bgr, clean_mask).
-    """
-    # 1. HSV-маска
     mask = build_color_mask(image_bgr)
 
-    # 2. Open — убрать мелкий шум
     k_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k_open)
 
-    # 3. Close — залить дырки (цифры внутри карточек)
     k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k_close)
 
-    # 4. Фильтр по площади и форме
     mask = filter_components_by_shape(mask, MIN_AREA, MAX_ASPECT, MIN_FILL)
 
-    # 5. Применяем к оригиналу
     result = cv2.bitwise_and(image_bgr, image_bgr, mask=mask)
     return result, mask
 
+#обратная задача - для себя
 def remove_foreground(image_bgr: np.ndarray):
-    """
-    Обратная задача: оставить фон, удалить синие/зелёные объекты.
-
-    Логика:
-      1. Строим цветовую маску (там, где синее/зелёное) — как в remove_background.
-      2. Чистим её (open + эрозия + фильтр по площади).
-      3. ИНВЕРТИРУЕМ маску: теперь белое = фон, чёрное = объект.
-      4. bitwise_and с оригиналом -> фон на месте, объект заменён на чёрный.
-    """
-    # 1. HSV-маска (там, где синее/зелёное)
     mask = build_color_mask(image_bgr)
 
-    # 2. Чистка — те же шаги, что и в remove_background
     k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k3)
 
@@ -219,21 +169,16 @@ def remove_foreground(image_bgr: np.ndarray):
         min_fill=MIN_FILL,
     )
 
-    k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k5)
+    k9 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k9)
 
     mask = cv2.dilate(mask, k3, iterations=1)
 
-    # 3. ИНВЕРСИЯ: объект -> 0, фон -> 255
     inverted = cv2.bitwise_not(mask)
 
-    # 4. Применяем к оригиналу
     result = cv2.bitwise_and(image_bgr, image_bgr, mask=inverted)
     return result, inverted
 
-# ==========================================================
-# ОБРАБОТКА ОДНОГО ИЗОБРАЖЕНИЯ
-# ==========================================================
 def process_one_image(image_path: str, output_subdir: str):
     os.makedirs(output_subdir, exist_ok=True)
     fname = os.path.basename(image_path)
@@ -241,7 +186,7 @@ def process_one_image(image_path: str, output_subdir: str):
 
     image_bgr = cv2.imread(image_path)
     if image_bgr is None:
-        print(f"  [!] Не удалось прочитать {image_path}, пропускаю.")
+        print(f" Не удалось прочитать {image_path}, пропуск.")
         return
 
     h, w = image_bgr.shape[:2]
@@ -257,56 +202,37 @@ def process_one_image(image_path: str, output_subdir: str):
         cv2.imwrite(os.path.join(output_subdir, name), img)
 
     save("01_original.png", image_bgr)
-
-    # ---- Авторский Собель ----
     print("    [1/9] sobel_manual...")
     sobel_manual_img = sobel_manual(image_gray)
     save("02_sobel_manual.png", sobel_manual_img)
-
-    # ---- Библиотечный Собель ----
     print("    [2/9] cv2.Sobel...")
     sobel_cv2_img = sobel_cv2(image_gray)
     save("03_sobel_cv2.png", sobel_cv2_img)
-
-    # ---- Авторская медиана ----
     print("    [3/9] median_filter_manual...")
     median_manual_img = median_filter_manual(image_gray, ksize=3)
     save("04_median_manual.png", median_manual_img)
-
-    # ---- Библиотечная медиана ----
     print("    [4/9] cv2.medianBlur...")
     median_cv2_img = median_filter_cv2(image_gray, ksize=3)
     save("05_median_cv2.png", median_cv2_img)
-
-    # ---- Низкочастотный фильтр (OpenCV) ----
     print("    [5/9] lowpass_cv2...")
     lowpass_img = lowpass_cv2(image_gray, LPF_KERNEL)
     save("06_lowpass_cv2.png", lowpass_img)
-
-    # ---- Высокочастотный фильтр (OpenCV) ----
     print("    [6/9] highpass_cv2...")
     highpass_img = highpass_cv2(image_gray, HPF_KERNEL)
     save("07_highpass_cv2.png", highpass_img)
-
-    # ---- Удаление фона (улучшенное) ----
     print("    [7/9] remove_background...")
     result_no_bg, clean_mask = remove_background(image_bgr)
-
-    # ---- Обратная задача: оставить фон, удалить объект ----
     print("    [9/10] remove_foreground...")
     result_no_fg, fg_mask = remove_foreground(image_bgr)
     save("11_mask_foreground.png", fg_mask)
     save("12_result_no_foreground.png", result_no_fg)
 
-    # Промежуточные маски — для отладки/отчёта
     raw_mask = build_color_mask(image_bgr)
     save("08_mask_raw.png", raw_mask)
     save("09_mask_clean.png", clean_mask)
     save("10_result_no_background.png", result_no_bg)
-
     print(f"  [OK] Результаты в: {output_subdir}")
 
-    # ---- Визуализация ----
     if SHOW_PLOTS:
         show_images(
             [image_bgr, sobel_manual_img, sobel_cv2_img,
@@ -322,17 +248,13 @@ def process_one_image(image_path: str, output_subdir: str):
              "Низкочастотный — OpenCV",
              "Высокочастотный — OpenCV",
              "Маска объекта",
-             "ИТОГ: без фона",
+             "ИТОГ: Заданные цвета",
              "Маска фона (инверсия)",
-             "ИТОГ: без объекта"],
+             "ИТОГ: Без С/З"],
             save_path=os.path.join(output_subdir, "steps.png"),
             cols=4
         )
 
-
-# ==========================================================
-# УТИЛИТА ВИЗУАЛИЗАЦИИ
-# ==========================================================
 def show_images(images, titles, save_path=None, cols=4):
     n = len(images)
     rows = (n + cols - 1) // cols
@@ -352,9 +274,6 @@ def show_images(images, titles, save_path=None, cols=4):
     plt.show()
 
 
-# ==========================================================
-# ГЛАВНЫЙ СЦЕНАРИЙ
-# ==========================================================
 def main():
     files = []
     for ext in SUPPORTED_EXT:
@@ -377,7 +296,7 @@ def main():
         try:
             process_one_image(path, output_subdir)
         except Exception as e:
-            print(f"  [!] Ошибка при обработке {path}: {e}")
+            print(f" Ошибка при обработке {path}: {e}")
 
     print(f"\n=== Готово! Все результаты в: {os.path.abspath(OUTPUT_DIR)} ===")
 
