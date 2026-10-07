@@ -21,35 +21,96 @@ def build_color_mask(image_bgr: np.ndarray) -> np.ndarray:
 
 
 def clean_mask(mask: np.ndarray) -> np.ndarray:
-    k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k3)
 
-def find_components_bfs(mask: np.ndarray):
+def find_components_scan(mask: np.ndarray):
+
+    h, w = mask.shape
+    labels = np.zeros((h, w), dtype=np.int32)
+    equivalences = {}   # {label: root_label}
+    next_label = 1
+
+    for y in range(h):
+        for x in range(w):
+            if mask[y, x] == 0:
+                continue
+
+            B = labels[y - 1, x] if y > 0 else 0
+            C = labels[y, x - 1] if x > 0 else 0
+
+            if B == 0 and C == 0:
+                labels[y, x] = next_label
+                next_label += 1
+            elif B != 0 and C == 0:
+                labels[y, x] = B
+            elif B == 0 and C != 0:
+                labels[y, x] = C
+            else:
+                if B == C:
+                    labels[y, x] = B
+                else:
+                    labels[y, x] = min(B, C)
+                    equivalences[max(B, C)] = min(B, C)
+
+    def find_root(label):
+        path = []
+        while label in equivalences:
+            path.append(label)
+            label = equivalences[label]
+        for p in path:
+            equivalences[p] = label
+        return label
+
+    for y in range(h):
+        for x in range(w):
+            if labels[y, x] != 0:
+                labels[y, x] = find_root(labels[y, x])
+
+    components_dict = {}
+    for y in range(h):
+        for x in range(w):
+            lbl = labels[y, x]
+            if lbl != 0:
+                components_dict.setdefault(lbl, []).append((y, x))
+
+    components = list(components_dict.values())
+
+    new_labels = np.zeros_like(labels)
+    for new_id, pixels in enumerate(components, 1):
+        for (y, x) in pixels:
+            new_labels[y, x] = new_id
+
+    return new_labels, components
+
+def find_components_recursive(mask: np.ndarray):
     h, w = mask.shape
     labels = np.zeros((h, w), dtype=np.int32)
     components = []
-    current_label = 0
+    current_label = [0]
+
+    def fill(y, x, lbl):
+
+        if y < 0 or y >= h or x < 0 or x >= w:
+            return
+
+        if mask[y, x] == 0 or labels[y, x] != 0:
+            return
+
+        labels[y, x] = lbl
+        pixels.append((y, x))
+
+        fill(y - 1, x, lbl)
+        fill(y + 1, x, lbl)
+        fill(y, x - 1, lbl)
+        fill(y, x + 1, lbl)
 
     for start_y in range(h):
         for start_x in range(w):
             if mask[start_y, start_x] > 0 and labels[start_y, start_x] == 0:
-                current_label += 1
+                current_label[0] += 1
                 pixels = []
-                queue = deque()
-                queue.append((start_y, start_x))
-                labels[start_y, start_x] = current_label
-
-                while queue:
-                    y, x = queue.popleft()
-                    pixels.append((y, x))
-
-                    for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                        ny, nx = y + dy, x + dx
-                        if 0 <= ny < h and 0 <= nx < w:
-                            if mask[ny, nx] > 0 and labels[ny, nx] == 0:
-                                labels[ny, nx] = current_label
-                                queue.append((ny, nx))
-
+                fill(start_y, start_x, current_label[0])
                 components.append(pixels)
 
     return labels, components
@@ -61,7 +122,7 @@ def filter_by_area(mask: np.ndarray,
     h, w = mask.shape
     max_area = int(h * w * max_area_ratio)
 
-    _, components = find_components_bfs(mask)
+    _, components = find_components_scan(mask)
 
     out = np.zeros_like(mask)
     for pixels in components:

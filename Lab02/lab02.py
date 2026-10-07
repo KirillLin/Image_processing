@@ -10,11 +10,11 @@ from config import (
     MIN_AREA, N_CLASSES, KMEANS_MAX_ITER, KMEANS_SEED, FEATURE_KEYS,
 )
 from preprocessing import (
-    build_color_mask, clean_mask, filter_by_area,
-    find_components_bfs, filter_small_components,
+    build_color_mask, clean_mask, filter_by_area, find_components_recursive,
+    find_components_scan, filter_small_components,
 )
 from features import compute_features_for_component, features_to_matrix
-from clustering import normalize_features, kmeans_manual
+from clustering import normalize_features, kmedoids_manual
 from visualization import (
     draw_labeled_objects, draw_clustered_objects, show_images,
 )
@@ -52,12 +52,11 @@ def process_one_image(image_path: str, output_subdir: str):
     save("02_mask_raw.png", mask_raw)
 
     mask_clean = clean_mask(mask_raw)
-    mask_clean = clean_mask(mask_raw)
     mask_filtered = filter_by_area(mask_clean, MIN_AREA)
     save("03_mask_clean.png", mask_filtered)
 
-    print("\n  [ЭТАП 2] Выделение связных областей (BFS)...")
-    labels, components = find_components_bfs(mask_filtered)
+    print("\n  [ЭТАП 2] Выделение связных областей (РЕКУРСИВНЫЙ алгоритм)...")
+    labels, components = find_components_recursive(mask_filtered)
     components = filter_small_components(components, MIN_AREA)
     print(f"    Найдено объектов: {len(components)}")
 
@@ -107,7 +106,7 @@ def process_one_image(image_path: str, output_subdir: str):
     X = features_to_matrix(features_list, keys=FEATURE_KEYS)
     X_norm = normalize_features(X)
 
-    cluster_labels, centers = kmeans_manual(
+    cluster_labels, medoid_indices = kmedoids_manual(
         X_norm, k=N_CLASSES, max_iter=KMEANS_MAX_ITER, seed=KMEANS_SEED
     )
     print(f"    Метки кластеров: {cluster_labels.tolist()}")
