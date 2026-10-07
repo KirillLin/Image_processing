@@ -1,114 +1,29 @@
-"""
-ЭТАП 3: Вычисление признаков объектов.
-
-Авторские реализации:
-  - площадь (area)
-  - периметр (perimeter)
-  - центр масс (center of mass)
-  - центральные моменты (central moments)
-  - компактность (compactness)
-  - удлиненность (elongation)
-
-Все признаки считаются вручную — без cv2.contourArea, cv2.arcLength,
-cv2.moments. Это требование ТЗ: «вычислить самостоятельно характеристики объектов».
-"""
-
 import numpy as np
+from collections import deque
 
-
-# ==========================================================
-# ПЛОЩАДЬ
-# ==========================================================
 def compute_area(pixels) -> int:
-    """
-    Площадь = количество пикселей в компоненте.
-
-    Аргументы:
-        pixels — список кортежей (y, x) — пиксели компоненты
-
-    Возвращает:
-        целое число — количество пикселей
-    """
     return len(pixels)
 
 
-# ==========================================================
-# ПЕРИМЕТР
-# ==========================================================
 def compute_perimeter(pixels) -> int:
-    """
-    Периметр = количество пикселей, у которых хотя бы один
-    4-сосед не принадлежит этой же компоненте.
-
-    Идея: пиксель на границе — тот, у которого есть «внешний» сосед.
-    Пиксель внутри — все 4 соседа принадлежат компоненте.
-
-    Аргументы:
-        pixels — список кортежей (y, x)
-
-    Возвращает:
-        целое число — количество граничных пикселей
-    """
-    pixel_set = set(pixels)  # для быстрой проверки «принадлежит ли сосед»
+    pixel_set = set(pixels)
     perimeter = 0
 
     for (y, x) in pixels:
-        # Проверяем 4 соседа: верх, низ, лево, право
         for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
             if (y + dy, x + dx) not in pixel_set:
                 perimeter += 1
-                break  # достаточно одного внешнего соседа — пиксель граничный
-
+                break
     return perimeter
 
 
-# ==========================================================
-# ЦЕНТР МАСС
-# ==========================================================
 def compute_center_mass(pixels):
-    """
-    Центр масс = средние координаты пикселей.
-
-    Формула из методички:
-        x̄ = Σx / N
-        ȳ = Σy / N
-
-    Аргументы:
-        pixels — список кортежей (y, x)
-
-    Возвращает:
-        (cy, cx) — кортеж из двух чисел с плавающей точкой
-    """
     ys = [p[0] for p in pixels]
     xs = [p[1] for p in pixels]
-
-    cy = sum(ys) / len(ys)
-    cx = sum(xs) / len(xs)
-
-    return cy, cx
+    return sum(ys) / len(ys), sum(xs) / len(xs)
 
 
-# ==========================================================
-# ЦЕНТРАЛЬНЫЕ МОМЕНТЫ
-# ==========================================================
 def compute_central_moments(pixels, cy, cx):
-    """
-    Центральные моменты m20, m02, m11.
-
-    Формулы из методички (стр. 30):
-        m20 = Σ (x - x̄)² / N
-        m02 = Σ (y - ȳ)² / N
-        m11 = Σ (x - x̄)(y - ȳ) / N
-
-    Нужны для вычисления удлиненности и ориентации.
-
-    Аргументы:
-        pixels — список кортежей (y, x)
-        cy, cx — координаты центра масс
-
-    Возвращает:
-        (m20, m02, m11) — три числа
-    """
     m20 = m02 = m11 = 0
 
     for (y, x) in pixels:
@@ -122,98 +37,69 @@ def compute_central_moments(pixels, cy, cx):
     return m20 / n, m02 / n, m11 / n
 
 
-# ==========================================================
-# КОМПАКТНОСТЬ
-# ==========================================================
 def compute_compactness(area, perimeter):
-    """
-    Компактность = P² / A.
-
-    Формула из методички (стр. 30).
-
-    Свойства:
-      - У круга C = 4π ≈ 12.57 (самое компактное).
-      - У квадрата C = 16.
-      - У вытянутых фигур — больше.
-
-    Аргументы:
-        area      — площадь
-        perimeter — периметр
-
-    Возвращает:
-        число — компактность
-    """
     if area == 0:
-        return float('inf')  # защита от деления на ноль
+        return 0.0
     return (perimeter ** 2) / area
 
 
-# ==========================================================
-# УДЛИНЕННОСТЬ
-# ==========================================================
 def compute_elongation(m20, m02, m11):
-    """
-    Удлиненность через центральные моменты.
-
-    Формула из методички (стр. 31):
-        elongation = (m20 + m02 + √((m20 - m02)² + 4m11²)) /
-                     (m20 + m02 - √((m20 - m02)² + 4m11²))
-
-    Свойства:
-      - У круга elongation = 1.
-      - У вытянутых фигур > 1.
-
-    Аргументы:
-        m20, m02, m11 — центральные моменты
-
-    Возвращает:
-        число — удлиненность
-    """
     diff = m20 - m02
     disc = np.sqrt(diff ** 2 + 4 * m11 ** 2)
-
     num = m20 + m02 + disc
     den = m20 + m02 - disc
-
     if den <= 0:
-        return 1.0  # защита от деления на ноль и отрицательного знаменателя
-
+        return 1.0
     return num / den
 
 
-# ==========================================================
-# ОРИЕНТАЦИЯ (ОПЦИОНАЛЬНО)
-# ==========================================================
 def compute_orientation(m20, m02, m11):
-    """
-    Ориентация главной оси инерции.
-    Формула из методички (стр. 31):
-        θ = ½ · arctan(2m11 / (m20 - m02))
-    Возвращает угол в радианах.
-    """
     if m20 == m02:
         return 0.0
     return 0.5 * np.arctan(2 * m11 / (m20 - m02))
 
+def count_holes(pixels, image_shape):
+    h, w = image_shape
 
-# ==========================================================
-# ОБЪЕДИНЯЮЩАЯ ФУНКЦИЯ
-# ==========================================================
-def compute_features_for_component(pixels) -> dict:
-    """
-    Вычисляет ВСЕ признаки для одной компоненты.
+    comp_mask = np.zeros((h, w), dtype=np.uint8)
+    for (y, x) in pixels:
+        comp_mask[y, x] = 1
 
-    Аргументы:
-        pixels — список кортежей (y, x)
+    inv = (comp_mask == 0).astype(np.uint8)
 
-    Возвращает:
-        словарь с признаками:
-          - area        — площадь
-          - perimeter   — периметр
-          - cy, cx      — центр масс
-          - compactness — компактность
-          - elongation  — удлиненность
-    """
+    visited = np.zeros((h, w), dtype=bool)
+    holes = 0
+
+    for start_y in range(h):
+        for start_x in range(w):
+            if inv[start_y, start_x] == 1 and not visited[start_y, start_x]:
+                queue = deque()
+                queue.append((start_y, start_x))
+                visited[start_y, start_x] = True
+                touches_border = False
+
+                while queue:
+                    y, x = queue.popleft()
+                    if y == 0 or y == h - 1 or x == 0 or x == w - 1:
+                        touches_border = True
+
+                    for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                        ny, nx = y + dy, x + dx
+                        if 0 <= ny < h and 0 <= nx < w:
+                            if inv[ny, nx] == 1 and not visited[ny, nx]:
+                                visited[ny, nx] = True
+                                queue.append((ny, nx))
+
+                if not touches_border:
+                    holes += 1
+
+    return holes
+
+def compute_mean_brightness(pixels, image_gray):
+    vals = [image_gray[y, x] for (y, x) in pixels]
+    return float(np.mean(vals))
+
+def compute_features_for_component(pixels, image_shape, image_gray=None) -> dict:
     area = compute_area(pixels)
     perimeter = compute_perimeter(pixels)
     cy, cx = compute_center_mass(pixels)
@@ -221,33 +107,27 @@ def compute_features_for_component(pixels) -> dict:
 
     compactness = compute_compactness(area, perimeter)
     elongation = compute_elongation(m20, m02, m11)
+    orientation = compute_orientation(m20, m02, m11)
+    holes = count_holes(pixels, image_shape)
 
-    return {
+    feats = {
         "area": area,
         "perimeter": perimeter,
         "cy": cy,
         "cx": cx,
+        "m20": m20, "m02": m02, "m11": m11,
         "compactness": compactness,
         "elongation": elongation,
+        "orientation": orientation,
+        "holes": holes,
     }
 
+    if image_gray is not None:
+        feats["brightness"] = compute_mean_brightness(pixels, image_gray)
 
-# ==========================================================
-# МАТРИЦА ПРИЗНАКОВ (ДЛЯ КЛАСТЕРИЗАЦИИ)
-# ==========================================================
-def features_to_matrix(features_list,
-                       keys=("area", "compactness", "elongation")) -> np.ndarray:
-    """
-    Преобразует список словарей признаков в матрицу N×D.
+    return feats
 
-    Аргументы:
-        features_list — список словарей, полученных из compute_features_for_component
-        keys          — какие признаки включить в матрицу
-                        (по умолчанию: area, compactness, elongation)
-
-    Возвращает:
-        np.ndarray формы (N, D) — матрица признаков для k-means
-    """
+def features_to_matrix(features_list, keys) -> np.ndarray:
     return np.array([
         [f[k] for k in keys]
         for f in features_list

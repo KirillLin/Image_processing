@@ -1,21 +1,15 @@
-"""
-Диагностика: показывает распределение H, S, V для пикселей на фото.
-Используется для подбора HSV-диапазонов.
-"""
-
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 
-IMAGE_PATH = r"input\1695128011374.jpg"   # ← путь к фото
+IMAGE_PATH = r"input\1695128011374.jpg"
 
 image = cv2.imread(IMAGE_PATH)
-image = cv2.resize(image, None, fx=0.5, fy=0.5)  # уменьшить для скорости
+image = cv2.resize(image, None, fx=0.5, fy=0.5)
 hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
 h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
 
-# Отбираем только «цветные» пиксели — с насыщенностью выше порога
 mask_colored = (s > 30) & (v > 30)
 h_colored = h[mask_colored]
 s_colored = s[mask_colored]
@@ -34,7 +28,6 @@ for i, count in enumerate(hist):
         bar = "█" * int(count / hist.max() * 40)
         print(f"  H {h_lo:3d}-{h_hi:3d}: {count:6d} {bar}")
 
-# Также можно визуально посмотреть: цветные пиксели
 fig, axes = plt.subplots(1, 4, figsize=(20, 5))
 
 axes[0].imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))

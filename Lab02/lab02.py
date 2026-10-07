@@ -1,14 +1,3 @@
-"""
-Лабораторная работа №2: Кластерный анализ в распознавании образов.
-
-Главный скрипт — оркестратор. Связывает модули:
-  - config         — настройки
-  - preprocessing  — удаление фона, связные области
-  - features       — признаки объектов
-  - clustering     — k-means
-  - visualization  — рисование и отображение
-"""
-
 import os
 import glob
 import csv
@@ -18,11 +7,11 @@ import numpy as np
 
 from config import (
     INPUT_DIR, OUTPUT_DIR, SUPPORTED_EXT, MAX_SIDE, SHOW_PLOTS,
-    MIN_AREA, N_CLASSES, KMEANS_MAX_ITER, KMEANS_SEED,
+    MIN_AREA, N_CLASSES, KMEANS_MAX_ITER, KMEANS_SEED, FEATURE_KEYS,
 )
 from preprocessing import (
     build_color_mask, clean_mask, filter_by_area,
-    erode_to_split, find_components_bfs, filter_small_components,
+    find_components_bfs, filter_small_components,
 )
 from features import compute_features_for_component, features_to_matrix
 from clustering import normalize_features, kmeans_manual
@@ -32,15 +21,15 @@ from visualization import (
 
 
 def process_one_image(image_path: str, output_subdir: str):
-    """Полный пайплайн для одного изображения."""
     os.makedirs(output_subdir, exist_ok=True)
     fname = os.path.basename(image_path)
-    print(f"\n=== Обработка: {fname} ===")
+    print(f"\n{'='*60}")
+    print(f"Обработка: {fname}")
+    print('='*60)
 
-    # ---- Загрузка и ресайз ----
     image_bgr = cv2.imread(image_path)
     if image_bgr is None:
-        print(f"  [!] Не удалось прочитать {image_path}")
+        print(f"  [!] Не удалось прочитать")
         return
 
     h, w = image_bgr.shape[:2]
@@ -48,33 +37,34 @@ def process_one_image(image_path: str, output_subdir: str):
         scale = MAX_SIDE / max(h, w)
         new_size = (int(w * scale), int(h * scale))
         image_bgr = cv2.resize(image_bgr, new_size, interpolation=cv2.INTER_AREA)
-        print(f"    Ресайз: {w}x{h} -> {new_size[0]}x{new_size[1]}")
+        print(f"  Ресайз: {w}x{h} -> {new_size[0]}x{new_size[1]}")
+
+    image_shape = image_bgr.shape[:2]
+    image_gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
 
     def save(name, img):
         cv2.imwrite(os.path.join(output_subdir, name), img)
 
     save("01_original.png", image_bgr)
 
-    # ---- ЭТАП 1. Удаление фона ----
-    print("  [1/5] Удаление фона...")
+    print("\n  [ЭТАП 1] Удаление фона (HSV-сегментация)...")
     mask_raw = build_color_mask(image_bgr)
     save("02_mask_raw.png", mask_raw)
 
     mask_clean = clean_mask(mask_raw)
+    mask_clean = clean_mask(mask_raw)
     mask_filtered = filter_by_area(mask_clean, MIN_AREA)
     save("03_mask_clean.png", mask_filtered)
 
-    # ---- ЭТАП 2. Разъединение объектов (эрозия) + BFS ----
-    print("  [2/5] Разъединение объектов (эрозия)...")
-    #mask_split = erode_to_split(mask_filtered, iterations=1)
-    mask_split = mask_filtered
-
-    print("  [3/5] Выделение связных областей (BFS)...")
-    labels, components = find_components_bfs(mask_split)
+    print("\n  [ЭТАП 2] Выделение связных областей (BFS)...")
+    labels, components = find_components_bfs(mask_filtered)
     components = filter_small_components(components, MIN_AREA)
     print(f"    Найдено объектов: {len(components)}")
 
-    # Пересобираем labels (только выжившие компоненты)
+    if len(components) == 0:
+        print("    [!] Объектов не найдено")
+        return
+
     labels_clean = np.zeros_like(labels)
     for new_id, pixels in enumerate(components, 1):
         for (y, x) in pixels:
@@ -83,53 +73,67 @@ def process_one_image(image_path: str, output_subdir: str):
     save("04_objects_labeled.png",
          draw_labeled_objects(image_bgr, labels_clean, components))
 
-    # Если объектов меньше классов — кластеризация невозможна
     if len(components) < N_CLASSES:
-        print(f"  [!] Объектов меньше, чем классов ({len(components)} < {N_CLASSES}). "
-              f"Пропускаю кластеризацию.")
+        print(f"    [!] Объектов ({len(components)}) < классов ({N_CLASSES}). "
+              f"Кластеризация пропущена.")
         return
 
-    # ---- ЭТАП 3. Вычисление признаков ----
-    print("  [4/5] Вычисление признаков...")
-    features_list = [compute_features_for_component(c) for c in components]
+    print("\n  [ЭТАП 3] Признаки объектов:")
+    features_list = [
+        compute_features_for_component(c, image_shape, image_gray)
+        for c in components
+    ]
 
-    # Сохранение в CSV
-    csv_path = os.path.join(output_subdir, "06_features.csv")
+    print(f"    {'#':>3} {'area':>6} {'perim':>6} {'compact':>8} "
+          f"{'elong':>7} {'holes':>6} {'bright':>7}")
+    for i, f in enumerate(features_list, 1):
+        print(f"    {i:>3} {f['area']:>6} {f['perimeter']:>6} "
+              f"{f['compactness']:>8.2f} {f['elongation']:>7.2f} "
+              f"{f['holes']:>6} {f.get('brightness', 0):>7.1f}")
+
+    csv_path = os.path.join(output_subdir, "05_features.csv")
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=[
-            "id", "area", "perimeter", "cy", "cx", "compactness", "elongation"])
+        fieldnames = ["id", "area", "perimeter", "cy", "cx",
+                      "compactness", "elongation", "orientation",
+                      "m20", "m02", "m11", "holes", "brightness"]
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for i, feats in enumerate(features_list, 1):
             row = {"id": i}
             row.update(feats)
             writer.writerow(row)
 
-    # ---- ЭТАП 4. Кластеризация ----
-    print("  [5/5] Кластеризация k-means...")
-    X = features_to_matrix(features_list, keys=("area", "compactness", "elongation"))
+    print(f"\n  [ЭТАП 4] Кластеризация k-means (k={N_CLASSES})...")
+    X = features_to_matrix(features_list, keys=FEATURE_KEYS)
     X_norm = normalize_features(X)
 
     cluster_labels, centers = kmeans_manual(
         X_norm, k=N_CLASSES, max_iter=KMEANS_MAX_ITER, seed=KMEANS_SEED
     )
-    print(f"    Классы: {cluster_labels.tolist()}")
+    print(f"    Метки кластеров: {cluster_labels.tolist()}")
 
-    # ---- ЭТАП 5. Раскраска ----
+    unique, counts = np.unique(cluster_labels, return_counts=True)
+    print(f"    Распределение: {dict(zip(unique.tolist(), counts.tolist()))}")
+
+    print("\n  [ЭТАП 5] Финальная раскраска...")
     result_black_bg = cv2.bitwise_and(image_bgr, image_bgr, mask=mask_filtered)
     result_clustered = draw_clustered_objects(
         result_black_bg, labels_clean, components, cluster_labels
     )
-    save("05_objects_clustered.png", result_clustered)
+    save("06_result_clustered.png", result_clustered)
 
-    print(f"  [OK] Результаты в: {output_subdir}")
+    print(f"\n  [OK] Результаты: {output_subdir}")
 
-    # ---- Визуализация ----
     if SHOW_PLOTS:
         show_images(
-            [image_bgr, mask_filtered, result_clustered],
-            [f"{fname}: оригинал",
-             "Маска объектов",
-             "Кластеризация (k-means, k=3)"],
+            [image_bgr, mask_raw, mask_filtered,
+             draw_labeled_objects(image_bgr, labels_clean, components),
+             result_clustered],
+            ["1. Оригинал",
+             "2. Маска (HSV)",
+             "3. Маска чистая",
+             "4. Объекты + номера (этап 2)",
+             "5. Финал: кластеры (этап 5)"],
             save_path=os.path.join(output_subdir, "steps.png"),
             cols=3,
         )
@@ -143,8 +147,7 @@ def main():
     files = sorted(set(files))
 
     if not files:
-        print(f"[!] В папке {INPUT_DIR} нет изображений.")
-        print(f"    Скопируйте датасет из Lab01.")
+        print(f"[!] В папке {INPUT_DIR} нет изображений")
         return
 
     print(f"Найдено изображений: {len(files)}")
@@ -158,9 +161,12 @@ def main():
         try:
             process_one_image(path, output_subdir)
         except Exception as e:
-            print(f"  [!] Ошибка при обработке {path}: {e}")
+            import traceback
+            print(f"  [!] Ошибка: {e}")
+            traceback.print_exc()
 
-    print(f"\n=== Готово! Все результаты в: {os.path.abspath(OUTPUT_DIR)} ===")
+    print(f"\n{'='*60}")
+    print(f"Готово: {os.path.abspath(OUTPUT_DIR)}")
 
 
 if __name__ == "__main__":

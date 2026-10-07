@@ -23,7 +23,7 @@ GREEN_RANGES = [
 ]
 
 
-MIN_AREA = 400
+MIN_AREA = 100
 MAX_ASPECT = 2.5
 MIN_FILL = 0.35
 
@@ -38,6 +38,26 @@ HPF_KERNEL = np.array([[-1, -1, -1],
 
 os.makedirs(INPUT_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+def plot_histogram(image_gray: np.ndarray, title: str, save_path: str):
+    fig = plt.figure(figsize=(12, 6), dpi=150)
+    ax = fig.add_subplot(111)
+
+    ax.hist(image_gray.ravel(), bins=256, range=(0, 255),
+            color='steelblue', edgecolor='none')
+
+    ax.set_title(title, fontsize=16)
+    ax.set_xlabel("Яркость", fontsize=14)
+    ax.set_ylabel("Количество пикселей", fontsize=14)
+    ax.set_xlim(0, 255)
+    ax.set_ylim(0, 2000)
+
+    ax.tick_params(labelsize=12)
+    ax.grid(alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
 
 #свой соболь
 def sobel_manual(image_gray: np.ndarray) -> np.ndarray:
@@ -101,8 +121,6 @@ def lowpass_cv2(image_gray: np.ndarray, kernel: np.ndarray) -> np.ndarray:
 def highpass_cv2(image_gray: np.ndarray, kernel: np.ndarray) -> np.ndarray:
     return cv2.filter2D(image_gray, ddepth=-1, kernel=kernel)
 
-
-
 def build_color_mask(image_bgr: np.ndarray) -> np.ndarray:
     hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
     mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
@@ -123,7 +141,7 @@ def filter_components_by_shape(mask: np.ndarray,
     num, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
     out = np.zeros_like(mask)
 
-    for i in range(1, num):  # 0 — фон
+    for i in range(1, num):
         x, y, w, h, area = stats[i]
         if area < min_area:
             continue
@@ -152,32 +170,6 @@ def remove_background(image_bgr: np.ndarray):
     result = cv2.bitwise_and(image_bgr, image_bgr, mask=mask)
     return result, mask
 
-#обратная задача - для себя
-def remove_foreground(image_bgr: np.ndarray):
-    mask = build_color_mask(image_bgr)
-
-    k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k3)
-
-    k2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
-    mask = cv2.erode(mask, k2, iterations=1)
-
-    mask = filter_components_by_shape(
-        mask,
-        min_area=MIN_AREA,
-        max_aspect=MAX_ASPECT,
-        min_fill=MIN_FILL,
-    )
-
-    k9 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k9)
-
-    mask = cv2.dilate(mask, k3, iterations=1)
-
-    inverted = cv2.bitwise_not(mask)
-
-    result = cv2.bitwise_and(image_bgr, image_bgr, mask=inverted)
-    return result, inverted
 
 def process_one_image(image_path: str, output_subdir: str):
     os.makedirs(output_subdir, exist_ok=True)
@@ -222,11 +214,13 @@ def process_one_image(image_path: str, output_subdir: str):
     save("07_highpass_cv2.png", highpass_img)
     print("    [7/9] remove_background...")
     result_no_bg, clean_mask = remove_background(image_bgr)
-    print("    [9/10] remove_foreground...")
-    result_no_fg, fg_mask = remove_foreground(image_bgr)
-    save("11_mask_foreground.png", fg_mask)
-    save("12_result_no_foreground.png", result_no_fg)
-
+    print("    гистограмма...")
+    result_no_bg_gray = cv2.cvtColor(result_no_bg, cv2.COLOR_BGR2GRAY)
+    plot_histogram(
+        result_no_bg_gray,
+        f"{fname}: гистограмма результата (без фона)",
+        save_path=os.path.join(output_subdir, "histogram_no_bg.png")
+    )
     raw_mask = build_color_mask(image_bgr)
     save("08_mask_raw.png", raw_mask)
     save("09_mask_clean.png", clean_mask)
@@ -238,8 +232,7 @@ def process_one_image(image_path: str, output_subdir: str):
             [image_bgr, sobel_manual_img, sobel_cv2_img,
              median_manual_img, median_cv2_img,
              lowpass_img, highpass_img,
-             clean_mask, result_no_bg,
-             fg_mask, result_no_fg],
+             clean_mask, result_no_bg],
             [f"{fname}: оригинал",
              "Собель — АВТОРСКИЙ",
              "Собель — OpenCV",
@@ -248,9 +241,7 @@ def process_one_image(image_path: str, output_subdir: str):
              "Низкочастотный — OpenCV",
              "Высокочастотный — OpenCV",
              "Маска объекта",
-             "ИТОГ: Заданные цвета",
-             "Маска фона (инверсия)",
-             "ИТОГ: Без С/З"],
+             "ИТОГ: Заданные цвета"],
             save_path=os.path.join(output_subdir, "steps.png"),
             cols=4
         )
