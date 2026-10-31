@@ -1,32 +1,42 @@
+"""
+Лабораторная работа №3: Манипуляции с объектами изображения.
+
+Задача: повернуть каждую цифру так, чтобы она была в удобном
+человекочитаемом формате (главная ось — вертикальная).
+"""
+
 import os
 import glob
-import csv
-
 import cv2
 import numpy as np
 
 from config import (
     INPUT_DIR, OUTPUT_DIR, SUPPORTED_EXT, MAX_SIDE, SHOW_PLOTS,
     MIN_AREA, N_CLASSES, KMEANS_MAX_ITER, KMEANS_SEED, FEATURE_KEYS,
+    ROUND_ELONGATION_THRESHOLD,
 )
 from preprocessing import (
-    build_color_mask, clean_mask, filter_by_area, find_components_recursive,
-    find_components_scan, filter_small_components,
+    build_color_mask, clean_mask, filter_by_area,
+    find_components_recursive, filter_small_components,
 )
 from features import compute_features_for_component, features_to_matrix
 from clustering import normalize_features, kmedoids_manual
 from visualization import (
-    draw_labeled_objects, draw_clustered_objects, show_images,
+    draw_clustered_objects,
+    show_images,
+    rotate_each_object_manual
 )
 
 
 def process_one_image(image_path: str, output_subdir: str):
+    """Полный пайплайн ЛР №3 для одного изображения."""
     os.makedirs(output_subdir, exist_ok=True)
     fname = os.path.basename(image_path)
     print(f"\n{'='*60}")
     print(f"Обработка: {fname}")
     print('='*60)
 
+    # ---- Загрузка и ресайз ----
     image_bgr = cv2.imread(image_path)
     if image_bgr is None:
         print(f"  [!] Не удалось прочитать")
@@ -47,15 +57,14 @@ def process_one_image(image_path: str, output_subdir: str):
 
     save("01_original.png", image_bgr)
 
+    # ===== ЭТАП 1. УДАЛЕНИЕ ФОНА =====
     print("\n  [ЭТАП 1] Удаление фона (HSV-сегментация)...")
     mask_raw = build_color_mask(image_bgr)
-    save("02_mask_raw.png", mask_raw)
-
     mask_clean = clean_mask(mask_raw)
     mask_filtered = filter_by_area(mask_clean, MIN_AREA)
-    save("03_mask_clean.png", mask_filtered)
 
-    print("\n  [ЭТАП 2] Выделение связных областей (РЕКУРСИВНЫЙ алгоритм)...")
+    # ===== ЭТАП 2. СВЯЗНЫЕ ОБЛАСТИ =====
+    print("\n  [ЭТАП 2] Выделение связных областей (рекурсивный)...")
     labels, components = find_components_recursive(mask_filtered)
     components = filter_small_components(components, MIN_AREA)
     print(f"    Найдено объектов: {len(components)}")
@@ -69,71 +78,68 @@ def process_one_image(image_path: str, output_subdir: str):
         for (y, x) in pixels:
             labels_clean[y, x] = new_id
 
-    save("04_objects_labeled.png",
-         draw_labeled_objects(image_bgr, labels_clean, components))
-
-    if len(components) < N_CLASSES:
-        print(f"    [!] Объектов ({len(components)}) < классов ({N_CLASSES}). "
-              f"Кластеризация пропущена.")
-        return
-
+    # ===== ЭТАП 3. ПРИЗНАКИ =====
     print("\n  [ЭТАП 3] Признаки объектов:")
     features_list = [
         compute_features_for_component(c, image_shape, image_gray)
         for c in components
     ]
 
-    print(f"    {'#':>3} {'area':>6} {'perim':>6} {'compact':>8} "
-          f"{'elong':>7} {'holes':>6} {'bright':>7}")
+    print(f"    {'#':>3} {'elong':>7} {'orient_deg':>10} {'holes':>6}")
     for i, f in enumerate(features_list, 1):
-        print(f"    {i:>3} {f['area']:>6} {f['perimeter']:>6} "
-              f"{f['compactness']:>8.2f} {f['elongation']:>7.2f} "
-              f"{f['holes']:>6} {f.get('brightness', 0):>7.1f}")
+        orient_deg = np.degrees(f['orientation'])
+        print(f"    {i:>3} {f['elongation']:>7.2f} {orient_deg:>10.2f} {f['holes']:>6}")
 
-    csv_path = os.path.join(output_subdir, "05_features.csv")
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        fieldnames = ["id", "area", "perimeter", "cy", "cx",
-                      "compactness", "elongation", "orientation",
-                      "m20", "m02", "m11", "holes", "brightness"]
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for i, feats in enumerate(features_list, 1):
-            row = {"id": i}
-            row.update(feats)
-            writer.writerow(row)
+    # ===== ЭТАП 4. КЛАСТЕРИЗАЦИЯ =====
+    print(f"\n  [ЭТАП 4] Кластеризация k-medoids (k={N_CLASSES})...")
 
-    print(f"\n  [ЭТАП 4] Кластеризация k-means (k={N_CLASSES})...")
-    X = features_to_matrix(features_list, keys=FEATURE_KEYS)
-    X_norm = normalize_features(X)
+    if len(components) >= N_CLASSES:
+        X = features_to_matrix(features_list, keys=FEATURE_KEYS)
+        X_norm = normalize_features(X)
+        cluster_labels, medoid_indices = kmedoids_manual(
+            X_norm, k=N_CLASSES, max_iter=KMEANS_MAX_ITER, seed=KMEANS_SEED
+        )
+        print(f"    Метки кластеров: {cluster_labels.tolist()}")
+    else:
+        print(f"    [!] Объектов ({len(components)}) < классов ({N_CLASSES}). "
+              f"Кластеризация пропущена.")
+        cluster_labels = np.zeros(len(components), dtype=int)
 
-    cluster_labels, medoid_indices = kmedoids_manual(
-        X_norm, k=N_CLASSES, max_iter=KMEANS_MAX_ITER, seed=KMEANS_SEED
-    )
-    print(f"    Метки кластеров: {cluster_labels.tolist()}")
-
-    unique, counts = np.unique(cluster_labels, return_counts=True)
-    print(f"    Распределение: {dict(zip(unique.tolist(), counts.tolist()))}")
-
-    print("\n  [ЭТАП 5] Финальная раскраска...")
+    # ===== ЭТАП 5. РАСКРАСКА (финал ЛР №2) =====
+    print("\n  [ЭТАП 5] Раскраска по классам (финал ЛР №2)...")
     result_black_bg = cv2.bitwise_and(image_bgr, image_bgr, mask=mask_filtered)
     result_clustered = draw_clustered_objects(
         result_black_bg, labels_clean, components, cluster_labels
     )
-    save("06_result_clustered.png", result_clustered)
+    save("02_result_lr2.png", result_clustered)
+
+    print("\n  [ЭТАП 6] Поворот цифр (ЛР №3)...")
+    print("    Поворот КАЖДОЙ цифры отдельно (полностью авторский код)...")
+
+    elongations = [f['elongation'] for f in features_list]
+    holes = [f['holes'] for f in features_list]
+
+    result_rotated_each = rotate_each_object_manual(
+        result_clustered,
+        components,
+        elongations,
+        round_threshold=ROUND_ELONGATION_THRESHOLD,
+        holes=holes,
+    )
+    save("04_rotated_each.png", result_rotated_each)
 
     print(f"\n  [OK] Результаты: {output_subdir}")
 
+    # ===== ВИЗУАЛИЗАЦИЯ =====
     if SHOW_PLOTS:
         show_images(
-            [image_bgr, mask_raw, mask_filtered,
-             draw_labeled_objects(image_bgr, labels_clean, components),
-             result_clustered],
+            [image_bgr,
+             result_clustered,
+             result_rotated_each],
             ["1. Оригинал",
-             "2. Маска (HSV)",
-             "3. Маска чистая",
-             "4. Объекты + номера (этап 2)",
-             "5. Финал: кластеры (этап 5)"],
-            save_path=os.path.join(output_subdir, "steps.png"),
+             "2. Финал ЛР №2 (кластеры)",
+             "3. ЛР №3 (поворот по orientation)"],
+            save_path=os.path.join(output_subdir, "steps_lr3.png"),
             cols=3,
         )
 

@@ -32,3 +32,6 @@ CLASS_COLORS = [
 
 os.makedirs(INPUT_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+ROUND_ELONGATION_THRESHOLD = 1.5
+TARGET_ANGLE = np.pi / 2
