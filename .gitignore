@@ -1,2 +1,4 @@
 .idea/
-/Lab01/output/
+Lab01/output/
+Lab02/output/
+Lab02/__pycache__/
