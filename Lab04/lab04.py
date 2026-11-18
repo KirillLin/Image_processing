@@ -1,6 +1,6 @@
 import os
-import sys
 import glob
+import hashlib
 
 import cv2
 import numpy as np
@@ -14,34 +14,45 @@ from config import (
     SHOW_PLOTS,
     MIN_AREA,
     ROUND_ELONGATION_THRESHOLD,
+    FLIP_MARGIN,
+    MIN_FILL,
+    MIN_CONFIDENCE,
 )
 from preprocessing import (
     build_color_mask,
     clean_mask,
     filter_by_area,
-    find_components_recursive,
+    find_components_scan,
     filter_small_components,
 )
 from features import compute_features_for_component
 from visualization import show_images, rotate_object_upright
 
-sys.setrecursionlimit(50000)
-
-MODEL_PATH = os.path.join(OUTPUT_DIR, "mnist_cnn.h5")
-FINETUNED_PATH = os.path.join(OUTPUT_DIR, "mnist_cnn_finetuned.h5")
+MODEL_PATH = os.path.join(OUTPUT_DIR, "mnist_cnn.keras")
+FINETUNED_PATH = os.path.join(OUTPUT_DIR, "mnist_cnn_finetuned.keras")
 
 RETRAIN = False
-EPOCHS = 10
+EPOCHS = 15
 BATCH_SIZE = 128
 USE_AUGMENTATION = True
 ORIENTATION_CHECK = True
 FINE_TUNE = False
 
+# Аугментация утолщением штриха: у цифр на плитках штрих толще, чем в MNIST
+THICKEN_AUG = True
+N_THICK = 30000      # сколько утолщённых копий добавить к обучающей выборке
+VAL_SIZE = 6000      # валидация - последние 6000 исходных картинок MNIST (без копий)
+
 TRUE_LABELS = {
     "1695138157752": [0, 8, 1, 7, 3],
     "1695138157765": [0, 8, 1, 7, 3],
     "1695138157776": [0, 8, 1, 7, 3],
+    "1695138157776 (1)": [0, 8, 1, 7, 3],   # дубликат; при совпадении файлов пропускается
+    "1695138157785": [0, 8, 1, 7, 3],
+    "1695138157794": [0, 8, 1, 7, 3],
     "1695138157805": [0, 1, 7],
+    "1725544579789": [7],
+    "1895128011374": [-1, 7, 1, 8, 7],      # -1 = не цифра (блик); порядок - построчно сверху вниз
 }
 
 
@@ -62,7 +73,7 @@ def extract_digit_rois(image_path: str, pad: int = 100):
     image_gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
 
     mask = filter_by_area(clean_mask(build_color_mask(image_bgr)), MIN_AREA)
-    _, components = find_components_recursive(mask)
+    _, components = find_components_scan(mask)
     components = filter_small_components(components, MIN_AREA)
     if not components:
         print("  [!] Объекты не найдены")
@@ -79,6 +90,18 @@ def extract_digit_rois(image_path: str, pad: int = 100):
 
     rois = []
     for i, (pixels, f) in enumerate(zip(components, features_list), 1):
+        # ложные объекты (блики, тонкие линии) почти не заполняют свой
+        # минимальный повёрнутый прямоугольник
+        pts = np.array([(x, y) for (y, x) in pixels], dtype=np.float32)
+        (_, _), (rw, rh), _ = cv2.minAreaRect(pts)
+        fill = len(pixels) / max(rw * rh, 1.0)
+        if fill < MIN_FILL:
+            print(
+                f"  [i] Объект #{i} (центр x={int(round(f['cx']))}, "
+                f"y={int(round(f['cy']))}) отброшен: заполнение {fill:.3f} < {MIN_FILL}"
+            )
+            continue
+
         canvas = np.zeros_like(padded)
         shifted = [(y + pad, x + pad) for (y, x) in pixels]
 
@@ -99,6 +122,7 @@ def extract_digit_rois(image_path: str, pad: int = 100):
                 "roi_bgr": roi,
                 "center_xy": (int(round(f["cx"])), int(round(f["cy"]))),
                 "features": f,
+                "fill": fill,
             }
         )
     return rois
@@ -190,7 +214,7 @@ def collect_dataset(files):
         print(f"\n--- {os.path.basename(path)} ---")
         rois = extract_digit_rois(path)
 
-        raw, x28, centers = [], [], []
+        raw, x28, centers, fills = [], [], [], []
         for r in rois:
             n = normalize_roi_to_mnist(r["roi_bgr"])
             if n is None:
@@ -199,6 +223,7 @@ def collect_dataset(files):
             raw.append(r["roi_bgr"])
             x28.append(n)
             centers.append(r["center_xy"])
+            fills.append(r["fill"])
 
         labels = TRUE_LABELS.get(stem)
         if labels is not None and len(labels) != len(rois):
@@ -212,7 +237,7 @@ def collect_dataset(files):
             labels = None
 
         for i, c in enumerate(centers, 1):
-            print(f"    #{i}: центр (x={c[0]}, y={c[1]})")
+            print(f"    #{i}: центр (x={c[0]}, y={c[1]}), заполнение {fills[i - 1]:.2f}")
 
         per_image.append(
             {
@@ -264,7 +289,7 @@ def _compile(model, lr=1e-3):
     )
 
 
-def train_mnist(x_train, y_train):
+def train_mnist(x_train, y_train, x_val, y_val):
     from tensorflow import keras
 
     L = keras.layers
@@ -291,7 +316,7 @@ def train_mnist(x_train, y_train):
         y_train,
         epochs=EPOCHS,
         batch_size=BATCH_SIZE,
-        validation_split=0.1,
+        validation_data=(x_val, y_val),
         verbose=2,
     )
     _compile(cnn)
@@ -299,25 +324,48 @@ def train_mnist(x_train, y_train):
 
 
 def save_model(model, path):
-    try:
-        model.save(path)
-        print(f"  Модель сохранена: {path}")
-    except Exception as e:
-        alt = os.path.splitext(path)[0] + ".keras"
-        model.save(alt)
-        print(f"  [!] .h5 не удалось ({e}); сохранено как {alt}")
+    model.save(path)
+    print(f"  Модель сохранена: {path}")
+
+
+def thicken_images(x, n, seed=0):
+    """
+    n случайных картинок MNIST с утолщённым штрихом (дилатация 3x3,
+    крест или квадрат). Возвращает (картинки, индексы исходных).
+    """
+    rng = np.random.default_rng(seed)
+    idx = rng.choice(len(x), size=n, replace=False)
+    kernels = [
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+        cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
+    ]
+    out = np.empty((n,) + x.shape[1:], dtype=np.float32)
+    for j, i in enumerate(idx):
+        k = kernels[int(rng.integers(len(kernels)))]
+        out[j, :, :, 0] = cv2.dilate(x[i, :, :, 0], k)
+    return out, idx
+
+
+def report_mnist_test(model, x_test, y_test):
+    test_loss, test_acc = model.evaluate(x_test, y_test, verbose=0)
+    print(f"\n  Accuracy на тесте MNIST: {test_acc * 100:.2f}%  (loss={test_loss:.4f})")
+    y_pred = np.argmax(model.predict(x_test, verbose=0), axis=1)
+    plot_confusion_matrix(
+        y_test, y_pred, os.path.join(OUTPUT_DIR, "confusion_matrix.png")
+    )
+    return test_acc
 
 
 def load_or_train_model():
     from tensorflow import keras
 
-    alt = os.path.splitext(MODEL_PATH)[0] + ".keras"
-    for p in (MODEL_PATH, alt):
-        if os.path.exists(p) and not RETRAIN:
-            print(f"Загружаю модель: {p}")
-            model = keras.models.load_model(p)
-            _compile(model)
-            return model, None
+    if os.path.exists(MODEL_PATH) and not RETRAIN:
+        print(f"Загружаю модель: {MODEL_PATH}")
+        model = keras.models.load_model(MODEL_PATH, compile=False)
+        _compile(model)
+        _, _, x_test, y_test = load_mnist()
+        report_mnist_test(model, x_test, y_test)
+        return model, None
 
     x_train, y_train, x_test, y_test = load_mnist()
 
@@ -328,27 +376,44 @@ def load_or_train_model():
         cols=5,
     )
 
+    # валидация - чистые исходные картинки, аугментированные копии в неё не попадают
+    x_val, y_val = x_train[-VAL_SIZE:], y_train[-VAL_SIZE:]
+    x_tr, y_tr = x_train[:-VAL_SIZE], y_train[:-VAL_SIZE]
+
+    if THICKEN_AUG:
+        x_th, idx = thicken_images(x_tr, N_THICK)
+        x_tr = np.concatenate([x_tr, x_th])
+        y_tr = np.concatenate([y_tr, y_tr[idx]])
+        print(f"\nДобавлено утолщённых копий: {len(x_th)}; всего обучающих: {len(x_tr)}")
+
     print("\nОбучение CNN на MNIST...")
-    model, history = train_mnist(x_train, y_train)
+    model, history = train_mnist(x_tr, y_tr, x_val, y_val)
     save_model(model, MODEL_PATH)
     plot_history(history, os.path.join(OUTPUT_DIR, "training_curves.png"))
 
-    test_loss, test_acc = model.evaluate(x_test, y_test, verbose=0)
-    print(f"\n  Accuracy на тесте MNIST: {test_acc * 100:.2f}%  (loss={test_loss:.4f})")
-    y_pred = np.argmax(model.predict(x_test, verbose=0), axis=1)
-    plot_confusion_matrix(
-        y_test, y_pred, os.path.join(OUTPUT_DIR, "confusion_matrix.png")
-    )
+    test_acc = report_mnist_test(model, x_test, y_test)
     return model, test_acc
 
 
-def predict_digits(model, x28, check_flip=ORIENTATION_CHECK):
+def digit_str(v):
+    return "не цифра" if int(v) < 0 else str(int(v))
+
+
+def predict_digits(
+    model, x28, check_flip=ORIENTATION_CHECK, margin=FLIP_MARGIN, min_conf=MIN_CONFIDENCE
+):
+    """
+    Возвращает (классы, уверенности, использованные картинки, флаги переворота,
+    детали). Переворот на 180° принимается, только если уверенность выросла
+    больше чем на margin.
+    """
     if len(x28) == 0:
         return (
             np.array([], int),
             np.array([]),
             np.zeros((0, 28, 28), np.float32),
             np.array([], bool),
+            {},
         )
 
     X = x28[..., None]
@@ -357,16 +422,29 @@ def predict_digits(model, x28, check_flip=ORIENTATION_CHECK):
     probs = p0.max(axis=1)
     used = x28.copy()
     flipped = np.zeros(len(x28), dtype=bool)
+    details = {
+        "orig_pred": preds.copy(),
+        "orig_prob": probs.copy(),
+        "flip_pred": None,
+        "flip_prob": None,
+    }
 
     if check_flip:
         x180 = x28[:, ::-1, ::-1]
         p1 = model.predict(x180[..., None], verbose=0)
-        better = p1.max(axis=1) > probs
+        details["flip_pred"] = p1.argmax(axis=1)
+        details["flip_prob"] = p1.max(axis=1)
+        better = p1.max(axis=1) > probs + margin
         preds = np.where(better, p1.argmax(axis=1), preds)
         probs = np.where(better, p1.max(axis=1), probs)
         used[better] = x180[better]
         flipped = better
-    return preds, probs, used, flipped
+
+    # отказ: низкая уверенность -> "не цифра" (класс -1)
+    rejected = probs < min_conf
+    preds = np.where(rejected, -1, preds)
+    details["rejected"] = rejected
+    return preds, probs, used, flipped, details
 
 
 def _save_grid(images, titles, path, cols=5):
@@ -438,6 +516,7 @@ def show_predictions(
     save_path=None,
     rois_raw=None,
     flipped=None,
+    details=None,
     cols=8,
 ):
     n = len(rois_28)
@@ -448,7 +527,7 @@ def show_predictions(
     cols = max(1, min(cols, n))
     blocks = (n + cols - 1) // cols
     fig, axes = plt.subplots(
-        2 * blocks, cols, figsize=(2.0 * cols, 3.6 * blocks), squeeze=False
+        2 * blocks, cols, figsize=(2.0 * cols, 4.2 * blocks), squeeze=False
     )
 
     for ax in axes.ravel():
@@ -478,14 +557,21 @@ def show_predictions(
         )
         ax_out.imshow(shown, cmap="gray", vmin=0, vmax=1)
 
-        title = f"Предсказано: {int(preds[i])}\n{probs[i] * 100:.1f}%"
+        title = f"Предсказано: {digit_str(preds[i])}\n{probs[i] * 100:.1f}%"
         color = "black"
         if true_labels is not None:
             ok = int(preds[i]) == int(true_labels[i])
             color = "green" if ok else "red"
-            title += f"\n(истина: {int(true_labels[i])})"
+            title += f"\n(истина: {digit_str(true_labels[i])})"
         if flipped is not None and flipped[i]:
             title += "\n[повёрнуто 180°]"
+        if details and details.get("flip_pred") is not None:
+            title += (
+                f"\nориг: {int(details['orig_pred'][i])} "
+                f"({details['orig_prob'][i] * 100:.0f}%)"
+                f"\n180°: {int(details['flip_pred'][i])} "
+                f"({details['flip_prob'][i] * 100:.0f}%)"
+            )
         ax_out.set_title(title, fontsize=8, color=color)
 
     if true_labels is not None:
@@ -529,12 +615,32 @@ def finetune_last_layer(model, per_image, epochs=40):
     return model
 
 
+def unique_files(files):
+    seen = {}
+    out = []
+    for p in files:
+        with open(p, "rb") as fh:
+            h = hashlib.md5(fh.read()).hexdigest()
+        if h in seen:
+            print(
+                f"[i] {os.path.basename(p)} - копия {os.path.basename(seen[h])}, пропуск"
+            )
+            continue
+        seen[h] = p
+        out.append(p)
+    return out
+
+
 def main():
     files = []
     for ext in SUPPORTED_EXT:
         files.extend(glob.glob(os.path.join(INPUT_DIR, f"*{ext}")))
         files.extend(glob.glob(os.path.join(INPUT_DIR, f"*{ext.upper()}")))
-    files = sorted(set(files))
+    # "имя.jpg" раньше "имя (1).jpg"; побайтовые дубликаты пропускаем
+    files = sorted(
+        set(files), key=lambda p: (len(os.path.basename(p)), os.path.basename(p))
+    )
+    files = unique_files(files)
     if not files:
         print(f"[!] В папке {INPUT_DIR} нет изображений")
         return
@@ -575,7 +681,7 @@ def main():
     for d in per_image:
         if len(d["x28"]) == 0:
             continue
-        preds, probs, used, flipped = predict_digits(model, d["x28"])
+        preds, probs, used, flipped, details = predict_digits(model, d["x28"])
 
         print(f"\n{d['stem']}:")
         for i, (p, pr) in enumerate(zip(preds, probs), 1):
@@ -584,10 +690,10 @@ def main():
                 extra = (
                     "  +"
                     if p == d["labels"][i - 1]
-                    else f"  - (истина {d['labels'][i - 1]})"
+                    else f"  - (истина {digit_str(d['labels'][i - 1])})"
                 )
             print(
-                f"    #{i}: Предсказанная цифра: {p}  ({pr * 100:.1f}%)"
+                f"    #{i}: Предсказанная цифра: {digit_str(p)}  ({pr * 100:.1f}%)"
                 f"{'  [повёрнуто 180°]' if flipped[i - 1] else ''}{extra}"
             )
 
@@ -601,6 +707,7 @@ def main():
             save_path=os.path.join(out_dir, "lr4_predictions.png"),
             rois_raw=d["raw"],
             flipped=flipped,
+            details=details,
         )
 
         if d["labels"] is not None:

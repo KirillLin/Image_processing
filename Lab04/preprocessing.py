@@ -1,6 +1,5 @@
 import cv2
 import numpy as np
-from collections import deque
 
 from config import (
     BLUE_RANGES, GREEN_RANGES,
@@ -25,12 +24,33 @@ def clean_mask(mask: np.ndarray) -> np.ndarray:
     return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k3)
 
 def find_components_scan(mask: np.ndarray):
-
+    """
+    Двухпроходная разметка (4-связность) с union-find.
+    Порядок компонент: по первому пикселю в построчном обходе (как у
+    рекурсивной версии), поэтому порядок объектов не меняется.
+    """
     h, w = mask.shape
     labels = np.zeros((h, w), dtype=np.int32)
-    equivalences = {}   # {label: root_label}
+    parent = {}          # {label: родитель}; корень указывает на себя
     next_label = 1
 
+    def find_root(label):
+        root = label
+        while parent[root] != root:
+            root = parent[root]
+        while parent[label] != root:          # сжатие путей
+            parent[label], label = root, parent[label]
+        return root
+
+    def union(a, b):
+        ra, rb = find_root(a), find_root(b)
+        if ra != rb:
+            if ra < rb:
+                parent[rb] = ra
+            else:
+                parent[ra] = rb
+
+    # проход 1: временные метки и таблица эквивалентностей
     for y in range(h):
         for x in range(w):
             if mask[y, x] == 0:
@@ -41,38 +61,26 @@ def find_components_scan(mask: np.ndarray):
 
             if B == 0 and C == 0:
                 labels[y, x] = next_label
+                parent[next_label] = next_label
                 next_label += 1
             elif B != 0 and C == 0:
                 labels[y, x] = B
             elif B == 0 and C != 0:
                 labels[y, x] = C
             else:
-                if B == C:
-                    labels[y, x] = B
-                else:
-                    labels[y, x] = min(B, C)
-                    equivalences[max(B, C)] = min(B, C)
+                labels[y, x] = min(B, C)
+                if B != C:
+                    union(B, C)
 
-    def find_root(label):
-        path = []
-        while label in equivalences:
-            path.append(label)
-            label = equivalences[label]
-        for p in path:
-            equivalences[p] = label
-        return label
-
-    for y in range(h):
-        for x in range(w):
-            if labels[y, x] != 0:
-                labels[y, x] = find_root(labels[y, x])
-
+    # проход 2: замена меток корнями и сбор пикселей
     components_dict = {}
     for y in range(h):
         for x in range(w):
             lbl = labels[y, x]
             if lbl != 0:
-                components_dict.setdefault(lbl, []).append((y, x))
+                root = find_root(lbl)
+                labels[y, x] = root
+                components_dict.setdefault(root, []).append((y, x))
 
     components = list(components_dict.values())
 

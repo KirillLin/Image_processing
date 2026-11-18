@@ -5,10 +5,6 @@ from collections import deque
 
 from config import CLASS_COLORS
 
-
-# ==========================================================
-# ОТРИСОВКА
-# ==========================================================
 def draw_labeled_objects(image_bgr, labels, components):
     rng = np.random.default_rng(42)
     palette = rng.integers(80, 255, size=(len(components) + 1, 3), dtype=np.uint8)
@@ -46,25 +42,11 @@ def show_images(images, titles, save_path=None, cols=3):
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.show()
 
-
-# ==========================================================
-# ЛР №3: РУЧНОЙ ПОВОРОТ КАЖДОЙ ЦИФРЫ (ПО ГЛАВНОЙ ОСИ)
-# ==========================================================
-
-# Если |асимметрия| по вертикали меньше этого значения, фигура считается
-# вертикально-симметричной (3) и 180° разрешается по горизонтали.
 SYMMETRY_EPS = 0.15
-
-# Уточнение угла: диапазон и шаг поиска (градусы)
 ANGLE_SEARCH_DEG = 25.0
 ANGLE_STEP_DEG = 0.5
 
-
 def _principal_axis(pixels):
-    """
-    Центр масс, смещения пикселей от центра и угол главной оси
-    (координаты изображения: x вправо, y вниз).
-    """
     ys = np.array([p[0] for p in pixels], dtype=np.float64)
     xs = np.array([p[1] for p in pixels], dtype=np.float64)
     cy, cx = ys.mean(), xs.mean()
@@ -74,13 +56,11 @@ def _principal_axis(pixels):
     m02 = np.mean(dy * dy)
     m11 = np.mean(dx * dy)
 
-    # arctan2 -> всегда именно ГЛАВНАЯ ось
     theta = 0.5 * np.arctan2(2.0 * m11, m20 - m02)
     return ys, xs, cy, cx, dy, dx, theta
 
 
 def _project(dx, dy, theta):
-    """Координаты точек в повёрнутой системе: a - горизонталь, b - вертикаль (вниз)."""
     c, s = np.cos(theta), np.sin(theta)
     a = dx * s - dy * c
     b = dx * c + dy * s
@@ -88,10 +68,6 @@ def _project(dx, dy, theta):
 
 
 def _refine_angle(dx, dy, theta):
-    """
-    Ручной поиск угла вокруг главной оси: выбираем поворот, при котором
-    ограничивающий прямоугольник фигуры имеет минимальную площадь.
-    """
     best_theta = theta
     best_area = np.inf
     for d in np.arange(-ANGLE_SEARCH_DEG, ANGLE_SEARCH_DEG + 1e-9, ANGLE_STEP_DEG):
@@ -112,12 +88,6 @@ def _skewness(values):
 
 
 def _need_flip_180(a, b):
-    """
-    Нужно ли довернуть фигуру на 180° (для всех, кроме 8).
-
-    - 1, 7: тяжёлая часть (перекладина, флажок) сверху -> skew_b > 0.
-    - 3 (почти симметрична по вертикали): "спинка" справа -> skew_a < 0.
-    """
     skew_b = _skewness(b)
     if abs(skew_b) >= SYMMETRY_EPS:
         return skew_b < 0
@@ -126,11 +96,6 @@ def _need_flip_180(a, b):
 
 
 def _find_holes(occ):
-    """
-    Дырки фигуры на бинарной маске occ (True = фигура).
-    Фон, достижимый из угла (он гарантированно пустой), - внешний;
-    остальные области фона - дырки. Возвращает [(площадь, средняя строка)].
-    """
     h, w = occ.shape
     seen = np.zeros((h, w), dtype=bool)
 
@@ -159,22 +124,16 @@ def _find_holes(occ):
 
 
 def _eight_needs_flip(occ):
-    """
-    8: большая петля должна быть снизу. Находим две самые большие дырки
-    и сравниваем их положение по вертикали. Если дырок меньше двух,
-    запасной вариант - сравнение числа пикселей сверху и снизу.
-    """
     holes = sorted(_find_holes(occ), reverse=True)[:2]
     if len(holes) == 2:
         (_, row_big), (_, row_small) = holes
-        return row_big < row_small          # большая выше -> переворачиваем
+        return row_big < row_small
     rows = np.where(occ.any(axis=1))[0]
     mid = (rows.min() + rows.max()) / 2.0
     return occ[:int(mid)].sum() > occ[int(mid) + 1:].sum()
 
 
 def _bilinear_sample(mask, xs, ys):
-    """Билинейная интерполяция маски (float) в точках (xs, ys)."""
     h, w = mask.shape
     x0 = np.floor(xs).astype(np.int64)
     y0 = np.floor(ys).astype(np.int64)
@@ -194,11 +153,6 @@ def _bilinear_sample(mask, xs, ys):
 
 
 def rotate_object_upright(image_bgr, result, pixels, holes=None):
-    """
-    Поворачивает одну фигуру так, чтобы её главная ось стала вертикальной,
-    и рисует её в result на месте центра масс.
-    Обратное отображение + билинейная интерполяция - всё вручную.
-    """
     h, w = image_bgr.shape[:2]
     ys, xs, cy, cx, dy, dx, theta = _principal_axis(pixels)
 
@@ -242,12 +196,7 @@ def rotate_object_upright(image_bgr, result, pixels, holes=None):
 
 
 def rotate_each_object_manual(image_bgr, components, elongations,
-                              round_threshold=1.5, holes=None):
-    """
-    Каждая цифра поворачивается отдельно: главная ось -> вертикаль,
-    затем выбирается правильное направление (не вверх ногами).
-    Круглые объекты (elongation < round_threshold) не трогаем.
-    """
+                              round_threshold=1.5, holes=None): #управление переворотом
     result = np.zeros_like(image_bgr)
 
     for i, pixels in enumerate(components):
